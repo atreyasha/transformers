@@ -1022,6 +1022,40 @@ class TrainerIntegrationTest(TestCasePlus, TrainerIntegrationCommon):
             trainer.train(resume_from_checkpoint=True)
         self.assertTrue("No valid checkpoint found in output directory" in str(context.exception))
 
+    def test_resume_training_with_randomness_large_accumulation(self):
+        # For more than 1 GPUs, since the randomness is introduced in the model and with DataParallel (which is used
+        # in this test for more than 2 GPUs), the calls to the torch RNG will happen in a random order (sometimes
+        # GPU 0 will call first and sometimes GPU 1).
+        random_torch = not torch.cuda.is_available() or torch.cuda.device_count() <= 1
+
+        if torch.cuda.is_available():
+            torch.backends.cudnn.deterministic = True
+        train_dataset = RegressionDataset(length=10)
+        eval_dataset = RegressionDataset()
+
+        config = RegressionModelConfig(a=0, b=2, random_torch=random_torch)
+        model = RegressionRandomPreTrainedModel(config)
+
+        tmp_dir = self.get_auto_remove_tmp_dir()
+        args = RegressionTrainingArguments(tmp_dir,
+                                           save_steps=1,
+                                           per_device_train_batch_size=1,
+                                           gradient_accumulation_steps=6,
+                                           learning_rate=0.1,
+                                           num_train_epochs=2)
+        trainer = Trainer(model, args, train_dataset=train_dataset, eval_dataset=eval_dataset)
+
+        trainer.train()
+        (a, b) = trainer.model.a.item(), trainer.model.b.item()
+
+        model = RegressionRandomPreTrainedModel(config)
+        trainer = Trainer(model, args, train_dataset=train_dataset, eval_dataset=eval_dataset)
+        trainer.train(resume_from_checkpoint=os.path.join(tmp_dir, "checkpoint-1"))
+        (a1, b1) = trainer.model.a.item(), trainer.model.b.item()
+
+        self.assertAlmostEqual(a, a1, delta=1e-8)
+        self.assertAlmostEqual(b, b1, delta=1e-8)
+
     def test_resume_training_with_randomness(self):
         # For more than 1 GPUs, since the randomness is introduced in the model and with DataParallel (which is used
         # in this test for more than 2 GPUs), the calls to the torch RNG will happen in a random order (sometimes
